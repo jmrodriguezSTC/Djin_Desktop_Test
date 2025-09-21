@@ -20,7 +20,7 @@ Ejecutar en CMD con Administrador
 
 - Build Executable
   Un solo archivo -> pyinstaller --onefile chat_app.py
-  Carpeta con dependencias -> pyinstaller chat_app.py
+  Carpeta con dependencias -> pyinstaller --noconsole --noconfirm chat_app.py
 
 Others
 pyinstaller --onefile --noconsole chat_app.py
