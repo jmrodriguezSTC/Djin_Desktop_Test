@@ -5,20 +5,22 @@
 Este script crea una aplicación de escritorio con PyQt6 que actúa como un
 monitor de sistema interactivo. El usuario puede escribir el nombre de una
 métrica de sistema para obtener un valor almacenado en una base de datos SQLite.
+Ahora también incluye la opción para obtener el Top 10 de procesos por consumo de CPU.
 
-Para su correcto funcionamiento, necesitas instalar la librería psutil:
+Para su correcto funcionamiento, necesitas instalar las librerías:
+pip install pyqt6
 pip install psutil
 
 Uso:
 1. Asegúrate de tener Python instalado.
 2. Instala PyQt6 y psutil usando pip.
-3. Ejecuta este script desde la línea de comandos: python system_monitor.py
+3. Ejecuta este script desde la línea de comandos: python chat_app.py
 """
 
 import sys
 import time
 import random
-import psutil # Se mantiene la importación según la solicitud
+import psutil
 import sqlite3
 import os
 import datetime
@@ -97,7 +99,7 @@ class ChatApp(QMainWindow):
         self.user_input.returnPressed.connect(self.handle_input)
         self.layout.addWidget(self.user_input)
 
-        # Definir la lista de métricas para mostrar y validar, sin "timestamp"
+        # Definir la lista de métricas, ahora con la opción 26
         self.metric_names = [
             "cpu_percent", "cpu_load_percent", "cpu_freq",
             "ram_percent", "ram_load_percent", "ram_used", "ram_load_used",
@@ -105,13 +107,16 @@ class ChatApp(QMainWindow):
             "disk_used", "disk_total", "disk_free", "swap_percent",
             "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
             "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-            "cpu_power_cores", "cpu_clocks", "hdd_used"
+            "cpu_power_cores", "cpu_clocks", "hdd_used",
+            "top_10_cpu"  # Agregamos la nueva métrica aquí
         ]
         
         # Diccionario para mapear nombres originales a nombres formateados
         self.formatted_metric_names = {name: " ".join(part.capitalize() for part in name.split('_')) for name in self.metric_names}
+        # Sobreescribir el formato de la nueva métrica
+        self.formatted_metric_names["top_10_cpu"] = "Top 10 Apps High CPU"
 
-        # Construir la lista de métricas para el mensaje inicial, con el formato nuevo
+        # Construir la lista de métricas para el mensaje inicial
         metrics_list_str = "Bot: Métricas disponibles:\n"
         for i, name in enumerate(self.metric_names, 1):
             formatted_name = self.formatted_metric_names[name]
@@ -175,7 +180,6 @@ class ChatApp(QMainWindow):
     def insert_sample_data(self):
         """
         Inserta datos de ejemplo en la tabla si está vacía.
-        Esto asegura que el script funcione la primera vez que se ejecute.
         """
         self.cursor.execute("SELECT COUNT(*) FROM metricas")
         count = self.cursor.fetchone()[0]
@@ -339,6 +343,68 @@ class ChatApp(QMainWindow):
         self.chat_history.append(html_message)
         self.chat_history.verticalScrollBar().setValue(self.chat_history.verticalScrollBar().maximum())
 
+    def get_top_cpu_processes(self):
+        """
+        Obtiene el top 10 de procesos por consumo de CPU usando la librería psutil.
+        """
+        process_data = []
+        try:
+            # Iteramos sobre todos los procesos para obtener nombre y uso de CPU
+            # psutil.process_iter() es un generador que nos permite iterar eficientemente
+            for p in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+                try:
+                    proc = psutil.Process(p.info['pid'])
+                    # Recolección de datos
+                    data = {
+                        'name': p.name(),
+                        'status': 'OK',
+                        'cpu_percent': p.cpu_percent(interval=0.1)
+                    }
+                    
+                    # Solo nos interesan los procesos que consumen CPU
+                    process_data.append(data)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # Capturamos excepciones si el proceso deja de existir o no tenemos permiso.
+                    continue
+            # --- TABLA AGRUPADA POR NOMBRE DE PROCESO ---
+            aggregated_data = {}
+            for p_info in process_data:
+                name = p_info['name']
+                if name not in aggregated_data:
+                    aggregated_data[name] = {
+                        'count': 0,
+                        'cpu_percent': 0.0
+                    }
+
+            if p_info['status'] == 'OK':
+                aggregated_data[name]['count'] += 1
+                aggregated_data[name]['cpu_percent'] += p_info['cpu_percent']
+            else:
+                aggregated_data[name]['count'] += 1
+
+
+            # Ordenamos la lista de procesos por el uso de CPU en orden descendente
+            sorted_processes = sorted(process_data, key=lambda x: x['cpu_percent'], reverse=True)
+            
+            sort_key = lambda item: item[1]['cpu_percent']
+            reverse = True
+            sorted_items = sorted(aggregated_data.items(), key=sort_key, reverse=reverse)
+            # Construimos la cadena de respuesta con el Top 10
+            response = "Top 10 procesos con mayor consumo de CPU:\n"
+            for i, proc in enumerate(sorted_processes[:10]):
+                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']/100:.2f}%\n"
+            return response
+
+            # Construimos la cadena de respuesta con el Top 10
+            response = "Top 10 procesos con mayor consumo de CPU:\n"
+            for i, proc in enumerate(sorted_processes[:10]):
+                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']:.2f}%\n"
+            
+            return response
+            
+        except Exception as e:
+            return f"Error al obtener la lista de procesos: {e}"
+
     def handle_input(self):
         """
         Maneja la entrada del usuario, busca la métrica solicitada y muestra
@@ -367,31 +433,41 @@ class ChatApp(QMainWindow):
             if 1 <= num_input <= len(self.metric_names):
                 metric_key = self.metric_names[num_input - 1]
             else:
-                self.append_bot_message("Número de métrica fuera de rango. Por favor, elige un número del 1 al 25 o escribe 'opciones'.")
+                self.append_bot_message(f"Número de métrica fuera de rango. Por favor, elige un número del 1 al {len(self.metric_names)} o escribe 'opciones'.")
                 self.user_input.clear()
                 return
         except ValueError:
             # Si no es un número, se normaliza la entrada del usuario para buscarla como nombre
             metric_key = user_text.replace(' ', '_')
         
-        metrics = self.get_metrics_data()
-        
-        if metric_key in metrics:
-            formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
+        # Verificamos si la métrica solicitada es la del Top 10 CPU
+        if metric_key == "top_10_cpu":
+            result = self.get_top_cpu_processes()
+            print(result)  # Para depuración en consola
+            self.append_bot_message(result)
+        elif metric_key in self.metric_names:
+            metrics = self.get_metrics_data()
             
-            # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
-            try:
-                raw_timestamp = metrics['timestamp']
-                dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
-                response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
-            except (ValueError, KeyError, IndexError):
-                response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
+            if metric_key in metrics:
+                formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
+                
+                # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
+                try:
+                    raw_timestamp = metrics['timestamp']
+                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                    formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
+                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
+                except (ValueError, KeyError, IndexError):
+                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
 
-            self.append_bot_message(response)
-        elif 'error' in metrics:
-            self.append_bot_message(f"{metrics['error']}")
+                self.append_bot_message(response)
+            elif 'error' in metrics:
+                self.append_bot_message(f"{metrics['error']}")
+            else:
+                # Este caso maneja si la métrica no está en los datos de la BD, aunque su nombre sea válido
+                self.append_bot_message("No se encontraron datos para esa métrica en la base de datos.")
         else:
+            # Métrica no válida, ni por número ni por nombre
             metrics_list_str = "Métrica no válida. Por favor, escribe el número o nombre exacto de la métrica.\n\nBot: Métricas disponibles:\n"
             for i, name in enumerate(self.metric_names, 1):
                 formatted_name = self.formatted_metric_names[name]
