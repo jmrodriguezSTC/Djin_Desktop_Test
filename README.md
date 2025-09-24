@@ -23,6 +23,14 @@ Se recomienda ejecutar estos comandos en la **línea de comandos (CMD)** con pri
   python -m venv .venv
   ```
 
+### Requerimientos del Entorno
+
+- **Guardar requerimientos:**
+
+```bash
+pip freeze > requirements.txt
+```
+
 ### Instalación de Librerías
 
 - **Instalar individualmente:**
@@ -32,6 +40,10 @@ Se recomienda ejecutar estos comandos en la **línea de comandos (CMD)** con pri
   pip install pywin32
   pip install pyinstaller
   pip install PyQt6
+  ```
+- **Instalar requerimientos:**
+  ```bash
+  pip install -r requirements.txt
   ```
 
 ### Creación de Ejecutables (Build Executable)
