@@ -127,7 +127,7 @@ class ChatApp(QMainWindow):
         self.cursor = None
         
         # Ruta de la base de datos especificada por el usuario
-        db_path = "C:/Users/jmrodriguez/Downloads/Projects/Tests/Djin_Test/build/Pruebas/exe.win-amd64-3.13/monitoreo.db"
+        db_path = "C:/Users/jmrodriguez/Downloads/Projects/Tests/Djin_Test/build/Pruebas/exe.win-amd64-3.13/data/monitoreo.db"
         
         try:
             self.conn = sqlite3.connect(db_path)
