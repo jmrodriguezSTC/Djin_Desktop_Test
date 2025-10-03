@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
-# Título: Monitor de Métricas del Sistema Interactivo
+# Título: Monitor de Métricas del Sistema Interactivo (DuckDB Backend)
 
 """
 Este script crea una aplicación de escritorio con PyQt6 que actúa como un
 monitor de sistema interactivo. El usuario puede escribir el nombre de una
-métrica de sistema para obtener un valor almacenado en una base de datos SQLite.
+métrica de sistema para obtener un valor almacenado en una base de datos DuckDB.
 Ahora también incluye la opción para obtener el Top 10 de procesos por consumo de CPU.
 
 Para su correcto funcionamiento, necesitas instalar las librerías:
 pip install pyqt6
 pip install psutil
+pip install duckdb
 
 Uso:
 1. Asegúrate de tener Python instalado.
-2. Instala PyQt6 y psutil usando pip.
+2. Instala PyQt6, psutil y duckdb usando pip.
 3. Ejecuta este script desde la línea de comandos: python chat_app.py
 """
 
@@ -21,7 +22,7 @@ import sys
 import time
 import random
 import psutil
-import sqlite3
+import duckdb # Importación de DuckDB en reemplazo de sqlite3
 import os
 import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
@@ -34,6 +35,9 @@ class ChatApp(QMainWindow):
     del chat para mostrar las métricas del sistema.
     """
     def __init__(self):
+        """
+        Inicializa la interfaz de usuario y establece la conexión con la base de datos DuckDB.
+        """
         super().__init__()
         self.setWindowTitle("Simulador de Chat de Métricas")
         self.setGeometry(100, 100, 600, 800)
@@ -101,13 +105,13 @@ class ChatApp(QMainWindow):
 
         # Definir la lista de métricas, ahora con la opción 26
         self.metric_names = [
-            "cpu_percent", "cpu_load_percent", "cpu_freq",
-            "ram_percent", "ram_load_percent", "ram_used", "ram_load_used",
-            "ram_total", "ram_free", "ram_load_free", "disco_percent",
+            "cpu_percent", "cpu_freq",
+            "ram_percent", "ram_used", 
+            "ram_total", "ram_free", "disk_percent",
             "disk_used", "disk_total", "disk_free", "swap_percent",
             "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
             "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-            "cpu_power_cores", "cpu_clocks", "hdd_used",
+            "cpu_power_cores", "cpu_clocks",
             "top_10_cpu"  # Agregamos la nueva métrica aquí
         ]
         
@@ -122,20 +126,23 @@ class ChatApp(QMainWindow):
             formatted_name = self.formatted_metric_names[name]
             metrics_list_str += f"{i}. {formatted_name}\n"
         
-        # Conexión a la base de datos
+        # Conexión a la base de datos DuckDB
         self.conn = None
-        self.cursor = None
         
-        # Ruta de la base de datos especificada por el usuario
-        db_path = "./data/monitoreo.db"
+        # Ruta de la base de datos DuckDB especificada por el usuario
+        # Modificación: Cambiado a monitoreo.duckdb
+        db_path = "./data/monitoreo.duckdb"
+        
+        # Aseguramos que el directorio 'data' exista para la BD
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
         try:
-            self.conn = sqlite3.connect(db_path)
-            self.cursor = self.conn.cursor()
+            # Conexión utilizando el API de DuckDB
+            self.conn = duckdb.connect(database=db_path, read_only=True)
             self.create_table()
             self.insert_sample_data() # Insertar datos de ejemplo
-        except sqlite3.Error as e:
-            self.append_bot_message(f"Error al conectar con la base de datos: {e}")
+        except duckdb.Error as e: # Manejo de errores específico de DuckDB
+            self.append_bot_message(f"Error al conectar con la base de datos DuckDB: {e}")
             self.conn = None
 
         # Estado inicial
@@ -143,54 +150,67 @@ class ChatApp(QMainWindow):
         self.append_bot_message(metrics_list_str)
 
     def create_table(self):
-        """Crea la tabla de métricas si no existe."""
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS metricas (
-            timestamp TEXT PRIMARY KEY,
-            cpu_percent REAL,
-            cpu_load_percent REAL,
-            cpu_freq REAL,
-            ram_percent REAL,
-            ram_load_percent REAL,
-            ram_used REAL,
-            ram_load_used REAL,
-            ram_total REAL,
-            ram_free REAL,
-            ram_load_free REAL,
-            disco_percent REAL,
-            disk_used REAL,
-            disk_total REAL,
-            disk_free REAL,
-            swap_percent REAL,
-            swap_usado REAL,
-            swap_total REAL,
-            red_bytes_sent INTEGER,
-            red_bytes_recv INTEGER,
-            cpu_temp_celsius REAL,
-            battery_percent REAL,
-            cpu_power_package REAL,
-            cpu_power_cores REAL,
-            cpu_clocks REAL,
-            hdd_used REAL
-        );
         """
-        self.cursor.execute(create_table_query)
-        self.conn.commit()
+        Crea la tabla de métricas si no existe utilizando la conexión DuckDB.
+        """
+        if not self.conn:
+            return
+        
+        create_table_query = """
+                CREATE TABLE IF NOT EXISTS metricas (
+                    timestamp TEXT PRIMARY KEY,
+                    hostname TEXT,
+                    username TEXT,
+                    cpu_percent DOUBLE,
+                    cpu_freq DOUBLE,
+                    ram_percent DOUBLE,
+                    ram_used DOUBLE,
+                    ram_total DOUBLE,
+                    ram_free DOUBLE,
+                    disk_percent DOUBLE,
+                    disk_used DOUBLE,
+                    disk_total DOUBLE,
+                    disk_free DOUBLE,
+                    swap_percent DOUBLE,
+                    swap_usado DOUBLE,
+                    swap_total DOUBLE,
+                    red_bytes_sent BIGINT,
+                    red_bytes_recv BIGINT,
+                    cpu_temp_celsius DOUBLE,
+                    battery_percent DOUBLE,
+                    cpu_power_package DOUBLE,
+                    cpu_power_cores DOUBLE,
+                    cpu_clocks DOUBLE
+                )
+        """
+        try:
+            self.conn.execute(create_table_query)
+        except duckdb.Error as e:
+            self.append_bot_message(f"Error al crear la tabla en DuckDB: {e}")
 
     def insert_sample_data(self):
         """
-        Inserta datos de ejemplo en la tabla si está vacía.
+        Inserta datos de ejemplo en la tabla si está vacía, adaptado para DuckDB.
         """
-        self.cursor.execute("SELECT COUNT(*) FROM metricas")
-        count = self.cursor.fetchone()[0]
-        if count == 0:
-            sample_data = self.generate_random_data()
-            columns = ', '.join(sample_data.keys())
-            placeholders = ', '.join('?' * len(sample_data))
-            query = f"INSERT INTO metricas ({columns}) VALUES ({placeholders})"
-            self.cursor.execute(query, tuple(sample_data.values()))
-            self.conn.commit()
-            self.append_bot_message("Se han insertado datos de ejemplo en la base de datos.")
+        if not self.conn:
+            return
+        
+        try:
+            # 1. Verificar si hay datos
+            count_result = self.conn.execute("SELECT COUNT(*) FROM metricas").fetchone()
+            count = count_result[0] if count_result else 0
+            
+            if count == 0:
+                sample_data = self.generate_random_data()
+                columns = ', '.join(sample_data.keys())
+                placeholders = ', '.join('?' * len(sample_data))
+                query = f"INSERT INTO metricas ({columns}) VALUES ({placeholders})"
+                
+                # 2. Insertar datos con parámetros
+                self.conn.execute(query, tuple(sample_data.values()))
+                self.append_bot_message("Se han insertado datos de ejemplo en la base de datos DuckDB.")
+        except duckdb.Error as e:
+            self.append_bot_message(f"Error al insertar datos de ejemplo en DuckDB: {e}")
 
     def generate_random_data(self):
         """Genera un conjunto de datos aleatorios para la inserción."""
@@ -204,16 +224,12 @@ class ChatApp(QMainWindow):
         return {
             'timestamp': datetime.datetime.now().isoformat(),
             'cpu_percent': random.uniform(0.0, 100.0),
-            'cpu_load_percent': random.uniform(0.0, 100.0),
             'cpu_freq': random.uniform(0.8, 4.5),
             'ram_percent': ram_percent_val,
-            'ram_load_percent': ram_percent_val,
             'ram_used': ram_total_gb * (ram_percent_val / 100),
-            'ram_load_used': ram_total_gb * (ram_percent_val / 100),
             'ram_total': ram_total_gb,
             'ram_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'ram_load_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'disco_percent': disk_percent_val,
+            'disk_percent': disk_percent_val,
             'disk_used': disk_total_gb * (disk_percent_val / 100),
             'disk_total': disk_total_gb,
             'disk_free': disk_total_gb * (1 - disk_percent_val / 100),
@@ -226,110 +242,98 @@ class ChatApp(QMainWindow):
             'battery_percent': random.uniform(0.0, 100.0),
             'cpu_power_package': random.uniform(10.0, 100.0),
             'cpu_power_cores': random.uniform(5.0, 90.0),
-            'cpu_clocks': random.randint(1000000, 5000000),
-            'hdd_used': random.uniform(0, disk_total_gb)
+            'cpu_clocks': random.randint(1000000, 5000000)
         }
 
     def get_metrics_data(self):
         """
-        Obtiene el último conjunto de datos de la base de datos `monitoreo.db`.
+        Obtiene el último conjunto de datos de la base de datos `monitoreo.duckdb`
+        y aplica formato de visualización de manera defensiva.
         """
         if not self.conn:
-            return {'error': 'No se pudo conectar a la base de datos.'}
+            return {'error': 'No se pudo conectar a la base de datos DuckDB.'}
         try:
-            self.cursor.execute("SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1")
-            row = self.cursor.fetchone()
+            # Ejecutar la consulta y obtener el último registro
+            result = self.conn.execute("SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1")
+            row = result.fetchone()
+            
             if not row:
                 return {'error': 'No hay datos en la tabla de métricas.'}
 
+            # Definición de columnas para mapear los resultados
             columns = [
-                "timestamp", "cpu_percent", "cpu_load_percent", "cpu_freq",
-                "ram_percent", "ram_load_percent", "ram_used", "ram_load_used",
-                "ram_total", "ram_free", "ram_load_free", "disco_percent",
+                "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
+                "ram_percent", "ram_used",
+                "ram_total", "ram_free", "disk_percent",
                 "disk_used", "disk_total", "disk_free", "swap_percent",
                 "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
                 "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-                "cpu_power_cores", "cpu_clocks", "hdd_used"
+                "cpu_power_cores", "cpu_clocks"
             ]
             
             # Crear un diccionario a partir de la fila y los nombres de las columnas
             metrics = dict(zip(columns, row))
 
-            # Formatear los datos para una mejor visualización, convirtiendo a float o int
-            # donde sea necesario.
-            for key in metrics:
-                # Si el valor es una cadena, limpiar el símbolo de '%' y convertir a float
-                if isinstance(metrics[key], str) and metrics[key].endswith('%'):
-                    metrics[key] = metrics[key].replace('%', '')
-                
-                if key in self.metric_names:
-                    if metrics[key] is not None:
-                        try:
-                            if key in ['red_bytes_sent', 'red_bytes_recv']:
-                                metrics[key] = int(metrics[key])
-                            else:
-                                metrics[key] = float(metrics[key])
-                        except (ValueError, TypeError):
-                             # Manejar casos donde la conversión falla
-                             pass
+            # --- Lógica de Formateo de Datos Defensivo (Corrección de ValueError) ---
+            # Aplicamos una conversión explícita a float antes de formatear,
+            # y usamos un try/except para manejar cualquier valor no numérico con 'N/A'.
 
-            # Aplicar el formato deseado
-            if 'cpu_percent' in metrics and metrics['cpu_percent'] is not None:
-                metrics['cpu_percent'] = f"{metrics['cpu_percent']:.2f}%"
-            if 'cpu_load_percent' in metrics and metrics['cpu_load_percent'] is not None:
-                metrics['cpu_load_percent'] = f"{metrics['cpu_load_percent']:.2f}%"
-            if 'cpu_freq' in metrics and metrics['cpu_freq'] is not None:
-                metrics['cpu_freq'] = f"{metrics['cpu_freq']:.2f} MHz"
-            if 'ram_percent' in metrics and metrics['ram_percent'] is not None:
-                metrics['ram_percent'] = f"{metrics['ram_percent']:.2f}%"
-            if 'ram_load_percent' in metrics and metrics['ram_load_percent'] is not None:
-                metrics['ram_load_percent'] = f"{metrics['ram_load_percent']:.2f}%"
-            if 'ram_used' in metrics and metrics['ram_used'] is not None:
-                metrics['ram_used'] = f"{metrics['ram_used']:.2f} GB"
-            if 'ram_load_used' in metrics and metrics['ram_load_used'] is not None:
-                metrics['ram_load_used'] = f"{metrics['ram_load_used']:.2f} GB"
-            if 'ram_total' in metrics and metrics['ram_total'] is not None:
-                metrics['ram_total'] = f"{metrics['ram_total']:.2f} GB"
-            if 'ram_free' in metrics and metrics['ram_free'] is not None:
-                metrics['ram_free'] = f"{metrics['ram_free']:.2f} GB"
-            if 'ram_load_free' in metrics and metrics['ram_load_free'] is not None:
-                metrics['ram_load_free'] = f"{metrics['ram_load_free']:.2f} GB"
-            if 'disco_percent' in metrics and metrics['disco_percent'] is not None:
-                metrics['disco_percent'] = f"{metrics['disco_percent']:.2f}%"
-            if 'disk_used' in metrics and metrics['disk_used'] is not None:
-                metrics['disk_used'] = f"{metrics['disk_used']:.2f} GB"
-            if 'disk_total' in metrics and metrics['disk_total'] is not None:
-                metrics['disk_total'] = f"{metrics['disk_total']:.2f} GB"
-            if 'disk_free' in metrics and metrics['disk_free'] is not None:
-                metrics['disk_free'] = f"{metrics['disk_free']:.2f} GB"
-            if 'swap_percent' in metrics and metrics['swap_percent'] is not None:
-                metrics['swap_percent'] = f"{metrics['swap_percent']:.2f}%"
-            if 'swap_usado' in metrics and metrics['swap_usado'] is not None:
-                metrics['swap_usado'] = f"{metrics['swap_usado']:.2f} GB"
-            if 'swap_total' in metrics and metrics['swap_total'] is not None:
-                metrics['swap_total'] = f"{metrics['swap_total']:.2f} GB"
-            if 'red_bytes_sent' in metrics and metrics['red_bytes_sent'] is not None:
-                metrics['red_bytes_sent'] = f"{metrics['red_bytes_sent'] / (1024**2):.2f} MB"
-            if 'red_bytes_recv' in metrics and metrics['red_bytes_recv'] is not None:
-                metrics['red_bytes_recv'] = f"{metrics['red_bytes_recv'] / (1024**2):.2f} MB"
-            if 'cpu_temp_celsius' in metrics and metrics['cpu_temp_celsius'] is not None:
-                metrics['cpu_temp_celsius'] = f"{metrics['cpu_temp_celsius']:.2f} °C"
-            if 'battery_percent' in metrics and metrics['battery_percent'] is not None:
-                metrics['battery_percent'] = f"{metrics['battery_percent']:.2f}%"
-            if 'cpu_power_package' in metrics and metrics['cpu_power_package'] is not None:
-                metrics['cpu_power_package'] = f"{metrics['cpu_power_package']:.2f} W"
-            if 'cpu_power_cores' in metrics and metrics['cpu_power_cores'] is not None:
-                metrics['cpu_power_cores'] = f"{metrics['cpu_power_cores']:.2f} W"
-            if 'hdd_used' in metrics and metrics['hdd_used'] is not None:
-                metrics['hdd_used'] = f"{metrics['hdd_used']:.2f} %"
-            if 'cpu_clocks' in metrics and metrics['cpu_clocks'] is not None:
-                metrics['cpu_clocks'] = f"{metrics['cpu_clocks']:.2f} MHz"
-            
-            # El campo 'cpu_clocks' ya es un string en el ejemplo original, no necesita formato
-            
+            def safe_format(key, suffix, is_bytes=False):
+                """Convierte a float y formatea el valor de manera segura."""
+                value = metrics.get(key)
+                if value is None:
+                    return None
+                
+                try:
+                    # Intenta convertir a float. Si falla, salta al 'except'.
+                    numeric_value = float(value)
+                    
+                    if is_bytes:
+                        # Convertir de bytes a MB para red
+                        return f"{numeric_value / (1024**2):.2f} {suffix}"
+                    
+                    return f"{numeric_value:.2f} {suffix}"
+                except (ValueError, TypeError):
+                    # Si el valor no es convertible a float (es una cadena inesperada),
+                    # se devuelve None o una indicación de error.
+                    return "N/A"
+
+            # Aplicar el formato de visualización final usando safe_format
+            metrics['cpu_percent'] = safe_format('cpu_percent', '%')
+            metrics['cpu_freq'] = safe_format('cpu_freq', 'MHz')
+            metrics['ram_percent'] = safe_format('ram_percent', '%')
+            metrics['ram_used'] = safe_format('ram_used', 'GB')
+            metrics['ram_total'] = safe_format('ram_total', 'GB')
+            metrics['ram_free'] = safe_format('ram_free', 'GB')
+            metrics['disk_percent'] = safe_format('disk_percent', '%')
+            metrics['disk_used'] = safe_format('disk_used', 'GB')
+            metrics['disk_total'] = safe_format('disk_total', 'GB')
+            metrics['disk_free'] = safe_format('disk_free', 'GB')
+            metrics['swap_percent'] = safe_format('swap_percent', '%')
+            metrics['swap_usado'] = safe_format('swap_usado', 'GB')
+            metrics['swap_total'] = safe_format('swap_total', 'GB')
+            metrics['red_bytes_sent'] = safe_format('red_bytes_sent', 'MB', is_bytes=True)
+            metrics['red_bytes_recv'] = safe_format('red_bytes_recv', 'MB', is_bytes=True)
+            metrics['cpu_temp_celsius'] = safe_format('cpu_temp_celsius', '°C')
+            metrics['battery_percent'] = safe_format('battery_percent', '%')
+            metrics['cpu_power_package'] = safe_format('cpu_power_package', 'W')
+            metrics['cpu_power_cores'] = safe_format('cpu_power_cores', 'W')
+            metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
+
+            # Manejar el timestamp que no es numérico
+            if 'timestamp' in metrics and metrics['timestamp'] is not None:
+                # Se mantiene la lógica de formateo del timestamp
+                raw_timestamp = metrics['timestamp']
+                try:
+                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                    metrics['timestamp'] = dt_object.strftime("%H:%M:%S %d/%m/%Y")
+                except (ValueError, IndexError):
+                    metrics['timestamp'] = raw_timestamp # Deja el valor crudo si no se puede parsear
+
+
             return metrics
-        except sqlite3.Error as e:
-            return {'error': f"Error al leer de la base de datos: {e}"}
+        except duckdb.Error as e: # Manejo de errores de DuckDB
+            return {'error': f"Error al leer de la base de datos DuckDB: {e}"}
 
     def append_bot_message(self, message):
         """Añade un mensaje del bot al historial de chat con estilo de burbuja izquierda."""
@@ -350,56 +354,48 @@ class ChatApp(QMainWindow):
         process_data = []
         try:
             # Iteramos sobre todos los procesos para obtener nombre y uso de CPU
-            # psutil.process_iter() es un generador que nos permite iterar eficientemente
             for p in psutil.process_iter(['pid', 'name', 'cpu_percent']):
                 try:
-                    proc = psutil.Process(p.info['pid'])
-                    # Recolección de datos
+                    proc = psutil.Process(p.info['pid']) 
                     data = {
                         'name': p.name(),
                         'status': 'OK',
                         'cpu_percent': p.cpu_percent(interval=0.1)
                     }
                     
-                    # Solo nos interesan los procesos que consumen CPU
-                    process_data.append(data)
+                    if data['cpu_percent'] > 0.0:
+                        process_data.append(data)
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # Capturamos excepciones si el proceso deja de existir o no tenemos permiso.
                     continue
-            # --- TABLA AGRUPADA POR NOMBRE DE PROCESO ---
+            
+            # --- AGRUPACIÓN Y ORDENACIÓN ---
             aggregated_data = {}
             for p_info in process_data:
                 name = p_info['name']
+                cpu_p = p_info['cpu_percent']
+                
                 if name not in aggregated_data:
                     aggregated_data[name] = {
                         'count': 0,
                         'cpu_percent': 0.0
                     }
-
-            if p_info['status'] == 'OK':
+                
                 aggregated_data[name]['count'] += 1
-                aggregated_data[name]['cpu_percent'] += p_info['cpu_percent']
-            else:
-                aggregated_data[name]['count'] += 1
+                aggregated_data[name]['cpu_percent'] += cpu_p
 
-
-            # Ordenamos la lista de procesos por el uso de CPU en orden descendente
-            sorted_processes = sorted(process_data, key=lambda x: x['cpu_percent'], reverse=True)
-            
+            # Ordenamos por el total de consumo de CPU agregado
             sort_key = lambda item: item[1]['cpu_percent']
-            reverse = True
-            sorted_items = sorted(aggregated_data.items(), key=sort_key, reverse=reverse)
-            # Construimos la cadena de respuesta con el Top 10
-            response = "Top 10 procesos con mayor consumo de CPU:\n"
-            for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']/100:.2f}%\n"
-            return response
-
-            # Construimos la cadena de respuesta con el Top 10
-            response = "Top 10 procesos con mayor consumo de CPU:\n"
-            for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']:.2f}%\n"
+            sorted_items = sorted(aggregated_data.items(), key=sort_key, reverse=True)
             
+            # Construimos la cadena de respuesta con el Top 10
+            response = "Top 10 procesos con mayor consumo de CPU (Agrupado por Nombre):\n"
+            for i, (name, data) in enumerate(sorted_items[:10]):
+                # Se utiliza el consumo total del grupo
+                response += f"{i+1}. {name} - {data['cpu_percent']:.2f}% (Instancias: {data['count']})\n"
+            
+            if not sorted_items:
+                response = "No se encontraron procesos activos con consumo de CPU significativo."
+                
             return response
             
         except Exception as e:
@@ -443,7 +439,6 @@ class ChatApp(QMainWindow):
         # Verificamos si la métrica solicitada es la del Top 10 CPU
         if metric_key == "top_10_cpu":
             result = self.get_top_cpu_processes()
-            print(result)  # Para depuración en consola
             self.append_bot_message(result)
         elif metric_key in self.metric_names:
             metrics = self.get_metrics_data()
@@ -451,14 +446,15 @@ class ChatApp(QMainWindow):
             if metric_key in metrics:
                 formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
                 
-                # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
-                try:
-                    raw_timestamp = metrics['timestamp']
-                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                    formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
-                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
-                except (ValueError, KeyError, IndexError):
-                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
+                # Ya que el formateo del valor se hizo en get_metrics_data, solo extraemos el valor
+                metric_value = metrics[metric_key]
+                formatted_timestamp = metrics.get('timestamp', 'Desconocida')
+                
+                # Comprobación de seguridad para los casos que get_metrics_data devuelve None o N/A
+                if metric_value is None or metric_value == "N/A":
+                    response = f"El valor de '{formatted_name}' no está disponible o no se pudo procesar."
+                else:
+                    response = f"El valor de '{formatted_name}' es: {metric_value} (Última actualización: {formatted_timestamp})"
 
                 self.append_bot_message(response)
             elif 'error' in metrics:
