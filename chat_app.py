@@ -12,6 +12,13 @@ pip install pyqt6
 pip install psutil
 pip install duckdb
 
+NOTA IMPORTANTE SOBRE DUCKDB:
+Esta versión del código implementa una conexión transaccional (abrir-ejecutar-cerrar)
+en modo de solo lectura (read_only=True) para cada consulta. Esto asegura que el 
+archivo 'monitoreo.duckdb' se libere inmediatamente después de la lectura,
+permitiendo que otro programa pueda escribir en él de forma periódica sin conflictos
+de bloqueo de archivos.
+
 Uso:
 1. Asegúrate de tener Python instalado.
 2. Instala PyQt6, psutil y duckdb usando pip.
@@ -22,7 +29,7 @@ import sys
 import time
 import random
 import psutil
-import duckdb # Importación de DuckDB en reemplazo de sqlite3
+import duckdb # Importación de DuckDB
 import os
 import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
@@ -36,7 +43,9 @@ class ChatApp(QMainWindow):
     """
     def __init__(self):
         """
-        Inicializa la interfaz de usuario y establece la conexión con la base de datos DuckDB.
+        Inicializa la interfaz de usuario y establece la configuración de la ruta 
+        de la base de datos DuckDB. La conexión se gestiona de forma transaccional 
+        en las funciones de lectura.
         """
         super().__init__()
         self.setWindowTitle("Simulador de Chat de Métricas")
@@ -126,214 +135,132 @@ class ChatApp(QMainWindow):
             formatted_name = self.formatted_metric_names[name]
             metrics_list_str += f"{i}. {formatted_name}\n"
         
-        # Conexión a la base de datos DuckDB
-        self.conn = None
-        
+        # --- Configuración de DuckDB (Solo ruta) ---
         # Ruta de la base de datos DuckDB especificada por el usuario
-        # Modificación: Cambiado a monitoreo.duckdb
         db_path = "./data/monitoreo.duckdb"
         
         # Aseguramos que el directorio 'data' exista para la BD
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        try:
-            # Conexión utilizando el API de DuckDB
-            self.conn = duckdb.connect(database=db_path, read_only=True)
-            self.create_table()
-            self.insert_sample_data() # Insertar datos de ejemplo
-        except duckdb.Error as e: # Manejo de errores específico de DuckDB
-            self.append_bot_message(f"Error al conectar con la base de datos DuckDB: {e}")
-            self.conn = None
+        # Almacenar la ruta; la conexión se gestionará de forma transaccional (abrir-ejecutar-cerrar).
+        self.db_path = db_path
+        
+        # Se elimina la conexión persistente y las llamadas a create_table e insert_sample_data.
 
         # Estado inicial
         self.append_bot_message("¡Hola! Soy un bot de monitoreo del sistema. Escribe el número o nombre de una métrica para conocer su valor, o escribe 'opciones' para ver la lista de métricas.")
         self.append_bot_message(metrics_list_str)
 
-    def create_table(self):
+    # --- FUNCIONES DE DUCKDB MODIFICADAS/AÑADIDAS ---
+
+    def _duckdb_execute(self, query):
         """
-        Crea la tabla de métricas si no existe utilizando la conexión DuckDB.
-        """
-        if not self.conn:
-            return
+        Gestiona la conexión transaccional (abrir-ejecutar-cerrar) y de solo lectura 
+        a la base de datos DuckDB para ejecutar una consulta y obtener resultados.
+        Esto asegura que el archivo .duckdb se libere inmediatamente para el proceso de escritura externo.
         
-        create_table_query = """
-                CREATE TABLE IF NOT EXISTS metricas (
-                    timestamp TEXT PRIMARY KEY,
-                    hostname TEXT,
-                    username TEXT,
-                    cpu_percent DOUBLE,
-                    cpu_freq DOUBLE,
-                    ram_percent DOUBLE,
-                    ram_used DOUBLE,
-                    ram_total DOUBLE,
-                    ram_free DOUBLE,
-                    disk_percent DOUBLE,
-                    disk_used DOUBLE,
-                    disk_total DOUBLE,
-                    disk_free DOUBLE,
-                    swap_percent DOUBLE,
-                    swap_usado DOUBLE,
-                    swap_total DOUBLE,
-                    red_bytes_sent BIGINT,
-                    red_bytes_recv BIGINT,
-                    cpu_temp_celsius DOUBLE,
-                    battery_percent DOUBLE,
-                    cpu_power_package DOUBLE,
-                    cpu_power_cores DOUBLE,
-                    cpu_clocks DOUBLE
-                )
+        :param query: Consulta SQL a ejecutar.
+        :return: Resultado de la consulta como una lista de tuplas, o un diccionario de error.
         """
         try:
-            self.conn.execute(create_table_query)
+            # Conexión transaccional y de solo lectura. El bloque 'with' garantiza el cierre de la conexión.
+            with duckdb.connect(database=self.db_path, read_only=True) as conn:
+                result = conn.execute(query).fetchall()
+                return result
         except duckdb.Error as e:
-            self.append_bot_message(f"Error al crear la tabla en DuckDB: {e}")
-
-    def insert_sample_data(self):
-        """
-        Inserta datos de ejemplo en la tabla si está vacía, adaptado para DuckDB.
-        """
-        if not self.conn:
-            return
-        
-        try:
-            # 1. Verificar si hay datos
-            count_result = self.conn.execute("SELECT COUNT(*) FROM metricas").fetchone()
-            count = count_result[0] if count_result else 0
-            
-            if count == 0:
-                sample_data = self.generate_random_data()
-                columns = ', '.join(sample_data.keys())
-                placeholders = ', '.join('?' * len(sample_data))
-                query = f"INSERT INTO metricas ({columns}) VALUES ({placeholders})"
-                
-                # 2. Insertar datos con parámetros
-                self.conn.execute(query, tuple(sample_data.values()))
-                self.append_bot_message("Se han insertado datos de ejemplo en la base de datos DuckDB.")
-        except duckdb.Error as e:
-            self.append_bot_message(f"Error al insertar datos de ejemplo en DuckDB: {e}")
-
-    def generate_random_data(self):
-        """Genera un conjunto de datos aleatorios para la inserción."""
-        ram_total_gb = 16
-        disk_total_gb = 1000
-
-        ram_percent_val = random.uniform(0.0, 100.0)
-        disk_percent_val = random.uniform(0.0, 100.0)
-        swap_percent_val = random.uniform(0.0, 100.0)
-
-        return {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'cpu_percent': random.uniform(0.0, 100.0),
-            'cpu_freq': random.uniform(0.8, 4.5),
-            'ram_percent': ram_percent_val,
-            'ram_used': ram_total_gb * (ram_percent_val / 100),
-            'ram_total': ram_total_gb,
-            'ram_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'disk_percent': disk_percent_val,
-            'disk_used': disk_total_gb * (disk_percent_val / 100),
-            'disk_total': disk_total_gb,
-            'disk_free': disk_total_gb * (1 - disk_percent_val / 100),
-            'swap_percent': swap_percent_val,
-            'swap_usado': 2 * (swap_percent_val / 100),
-            'swap_total': 2,
-            'red_bytes_sent': random.randint(100000, 100000000),
-            'red_bytes_recv': random.randint(100000, 100000000),
-            'cpu_temp_celsius': random.uniform(30.0, 80.0),
-            'battery_percent': random.uniform(0.0, 100.0),
-            'cpu_power_package': random.uniform(10.0, 100.0),
-            'cpu_power_cores': random.uniform(5.0, 90.0),
-            'cpu_clocks': random.randint(1000000, 5000000)
-        }
+            # Captura errores específicos de DuckDB (ej. archivo no encontrado, tabla no existe, corrupción).
+            error_msg = f"Error de DuckDB al ejecutar consulta: {e}. Confirme la existencia del archivo 'monitoreo.duckdb' y la tabla 'metricas'."
+            self.append_bot_message(error_msg)
+            return {'error': error_msg}
 
     def get_metrics_data(self):
         """
-        Obtiene el último conjunto de datos de la base de datos `monitoreo.duckdb`
-        y aplica formato de visualización de manera defensiva.
+        Obtiene el último conjunto de datos de la tabla 'metricas' utilizando una 
+        conexión transaccional (abrir-ejecutar-cerrar) de solo lectura.
         """
-        if not self.conn:
-            return {'error': 'No se pudo conectar a la base de datos DuckDB.'}
-        try:
-            # Ejecutar la consulta y obtener el último registro
-            result = self.conn.execute("SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1")
-            row = result.fetchone()
+        query = "SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1"
+        result_set = self._duckdb_execute(query) # Llama a la función transaccional
+        
+        # Verificar si _duckdb_execute retornó un error
+        if isinstance(result_set, dict) and 'error' in result_set:
+            # La función de ejecución ya notificó el error, solo retornamos el estado de error
+            return result_set
             
-            if not row:
-                return {'error': 'No hay datos en la tabla de métricas.'}
+        if not result_set or not result_set[0]:
+            return {'error': 'No hay datos en la tabla de métricas.'}
 
-            # Definición de columnas para mapear los resultados
-            columns = [
-                "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
-                "ram_percent", "ram_used",
-                "ram_total", "ram_free", "disk_percent",
-                "disk_used", "disk_total", "disk_free", "swap_percent",
-                "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
-                "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-                "cpu_power_cores", "cpu_clocks"
-            ]
+        row = result_set[0]
+        
+        # Definición de columnas para mapear los resultados (se asume que la estructura de la tabla es conocida)
+        columns = [
+            "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
+            "ram_percent", "ram_used",
+            "ram_total", "ram_free", "disk_percent",
+            "disk_used", "disk_total", "disk_free", "swap_percent",
+            "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
+            "cpu_temp_celsius", "battery_percent", "cpu_power_package",
+            "cpu_power_cores", "cpu_clocks"
+        ]
+        
+        # Crear un diccionario a partir de la fila y los nombres de las columnas
+        metrics = dict(zip(columns, row))
+
+        # --- Lógica de Formateo de Datos Defensivo ---
+        def safe_format(key, suffix, is_bytes=False):
+            """Convierte a float y formatea el valor de manera segura."""
+            value = metrics.get(key)
+            if value is None:
+                return None
             
-            # Crear un diccionario a partir de la fila y los nombres de las columnas
-            metrics = dict(zip(columns, row))
-
-            # --- Lógica de Formateo de Datos Defensivo (Corrección de ValueError) ---
-            # Aplicamos una conversión explícita a float antes de formatear,
-            # y usamos un try/except para manejar cualquier valor no numérico con 'N/A'.
-
-            def safe_format(key, suffix, is_bytes=False):
-                """Convierte a float y formatea el valor de manera segura."""
-                value = metrics.get(key)
-                if value is None:
-                    return None
+            try:
+                # Intenta convertir a float. Si falla, salta al 'except'.
+                numeric_value = float(value)
                 
-                try:
-                    # Intenta convertir a float. Si falla, salta al 'except'.
-                    numeric_value = float(value)
-                    
-                    if is_bytes:
-                        # Convertir de bytes a MB para red
-                        return f"{numeric_value / (1024**2):.2f} {suffix}"
-                    
-                    return f"{numeric_value:.2f} {suffix}"
-                except (ValueError, TypeError):
-                    # Si el valor no es convertible a float (es una cadena inesperada),
-                    # se devuelve None o una indicación de error.
-                    return "N/A"
+                if is_bytes:
+                    # Convertir de bytes a MB para red
+                    return f"{numeric_value / (1024**2):.2f} {suffix}"
+                
+                return f"{numeric_value:.2f} {suffix}"
+            except (ValueError, TypeError):
+                # Si el valor no es convertible a float (es una cadena inesperada),
+                # se devuelve None o una indicación de error.
+                return "N/A"
 
-            # Aplicar el formato de visualización final usando safe_format
-            metrics['cpu_percent'] = safe_format('cpu_percent', '%')
-            metrics['cpu_freq'] = safe_format('cpu_freq', 'MHz')
-            metrics['ram_percent'] = safe_format('ram_percent', '%')
-            metrics['ram_used'] = safe_format('ram_used', 'GB')
-            metrics['ram_total'] = safe_format('ram_total', 'GB')
-            metrics['ram_free'] = safe_format('ram_free', 'GB')
-            metrics['disk_percent'] = safe_format('disk_percent', '%')
-            metrics['disk_used'] = safe_format('disk_used', 'GB')
-            metrics['disk_total'] = safe_format('disk_total', 'GB')
-            metrics['disk_free'] = safe_format('disk_free', 'GB')
-            metrics['swap_percent'] = safe_format('swap_percent', '%')
-            metrics['swap_usado'] = safe_format('swap_usado', 'GB')
-            metrics['swap_total'] = safe_format('swap_total', 'GB')
-            metrics['red_bytes_sent'] = safe_format('red_bytes_sent', 'MB', is_bytes=True)
-            metrics['red_bytes_recv'] = safe_format('red_bytes_recv', 'MB', is_bytes=True)
-            metrics['cpu_temp_celsius'] = safe_format('cpu_temp_celsius', '°C')
-            metrics['battery_percent'] = safe_format('battery_percent', '%')
-            metrics['cpu_power_package'] = safe_format('cpu_power_package', 'W')
-            metrics['cpu_power_cores'] = safe_format('cpu_power_cores', 'W')
-            metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
+        # Aplicar el formato de visualización final usando safe_format
+        metrics['cpu_percent'] = safe_format('cpu_percent', '%')
+        metrics['cpu_freq'] = safe_format('cpu_freq', 'MHz')
+        metrics['ram_percent'] = safe_format('ram_percent', '%')
+        metrics['ram_used'] = safe_format('ram_used', 'GB')
+        metrics['ram_total'] = safe_format('ram_total', 'GB')
+        metrics['ram_free'] = safe_format('ram_free', 'GB')
+        metrics['disk_percent'] = safe_format('disk_percent', '%')
+        metrics['disk_used'] = safe_format('disk_used', 'GB')
+        metrics['disk_total'] = safe_format('disk_total', 'GB')
+        metrics['disk_free'] = safe_format('disk_free', 'GB')
+        metrics['swap_percent'] = safe_format('swap_percent', '%')
+        metrics['swap_usado'] = safe_format('swap_usado', 'GB')
+        metrics['swap_total'] = safe_format('swap_total', 'GB')
+        metrics['red_bytes_sent'] = safe_format('red_bytes_sent', 'MB', is_bytes=True)
+        metrics['red_bytes_recv'] = safe_format('red_bytes_recv', 'MB', is_bytes=True)
+        metrics['cpu_temp_celsius'] = safe_format('cpu_temp_celsius', '°C')
+        metrics['battery_percent'] = safe_format('battery_percent', '%')
+        metrics['cpu_power_package'] = safe_format('cpu_power_package', 'W')
+        metrics['cpu_power_cores'] = safe_format('cpu_power_cores', 'W')
+        metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
 
-            # Manejar el timestamp que no es numérico
-            if 'timestamp' in metrics and metrics['timestamp'] is not None:
-                # Se mantiene la lógica de formateo del timestamp
-                raw_timestamp = metrics['timestamp']
-                try:
-                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                    metrics['timestamp'] = dt_object.strftime("%H:%M:%S %d/%m/%Y")
-                except (ValueError, IndexError):
-                    metrics['timestamp'] = raw_timestamp # Deja el valor crudo si no se puede parsear
+        # Manejar el timestamp que no es numérico
+        if 'timestamp' in metrics and metrics['timestamp'] is not None:
+            raw_timestamp = metrics['timestamp']
+            try:
+                dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                metrics['timestamp'] = dt_object.strftime("%H:%M:%S %d/%m/%Y")
+            except (ValueError, IndexError):
+                metrics['timestamp'] = raw_timestamp # Deja el valor crudo si no se puede parsear
 
-
-            return metrics
-        except duckdb.Error as e: # Manejo de errores de DuckDB
-            return {'error': f"Error al leer de la base de datos DuckDB: {e}"}
+        return metrics
+    
+    # --- FUNCIONES DE ESCRITURA ELIMINADAS ---
+    # Se han eliminado: create_table, insert_sample_data, y generate_random_data.
 
     def append_bot_message(self, message):
         """Añade un mensaje del bot al historial de chat con estilo de burbuja izquierda."""
@@ -350,6 +277,7 @@ class ChatApp(QMainWindow):
     def get_top_cpu_processes(self):
         """
         Obtiene el top 10 de procesos por consumo de CPU usando la librería psutil.
+        Esta función no interactúa con DuckDB.
         """
         process_data = []
         try:
@@ -443,6 +371,12 @@ class ChatApp(QMainWindow):
         elif metric_key in self.metric_names:
             metrics = self.get_metrics_data()
             
+            # Si se encuentra un error en la lectura de DuckDB, se detiene
+            if 'error' in metrics:
+                # El mensaje de error ya fue mostrado por _duckdb_execute o get_metrics_data
+                self.user_input.clear()
+                return
+
             if metric_key in metrics:
                 formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
                 
@@ -457,8 +391,6 @@ class ChatApp(QMainWindow):
                     response = f"El valor de '{formatted_name}' es: {metric_value} (Última actualización: {formatted_timestamp})"
 
                 self.append_bot_message(response)
-            elif 'error' in metrics:
-                self.append_bot_message(f"{metrics['error']}")
             else:
                 # Este caso maneja si la métrica no está en los datos de la BD, aunque su nombre sea válido
                 self.append_bot_message("No se encontraron datos para esa métrica en la base de datos.")
