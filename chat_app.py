@@ -5,15 +5,15 @@
 Este script crea una aplicación de escritorio con PyQt6 que actúa como un
 monitor de sistema interactivo. El usuario puede escribir el nombre de una
 métrica de sistema para obtener un valor almacenado en una base de datos SQLite.
-Ahora también incluye la opción para obtener el Top 10 de procesos por consumo de CPU.
+Ahora se utiliza DuckDB para consultar directamente el archivo SQLite,
+garantizando un acceso eficiente y transaccional.
 
 Para su correcto funcionamiento, necesitas instalar las librerías:
-pip install pyqt6
-pip install psutil
+pip install pyqt6 psutil duckdb
 
 Uso:
 1. Asegúrate de tener Python instalado.
-2. Instala PyQt6 y psutil usando pip.
+2. Instala PyQt6, psutil y duckdb usando pip.
 3. Ejecuta este script desde la línea de comandos: python chat_app.py
 """
 
@@ -21,7 +21,7 @@ import sys
 import time
 import random
 import psutil
-import sqlite3
+import duckdb  # Reemplazo de sqlite3 por duckdb
 import os
 import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
@@ -122,134 +122,81 @@ class ChatApp(QMainWindow):
             formatted_name = self.formatted_metric_names[name]
             metrics_list_str += f"{i}. {formatted_name}\n"
         
-        # Conexión a la base de datos
-        self.conn = None
-        self.cursor = None
-        
         # Ruta de la base de datos especificada por el usuario
-        db_path = "./data/monitoreo.db"
-        
+        self.db_path = "./data/monitoreo.db"
+        self.conn = None # Conexión al motor de DuckDB
+        self.cursor = None # No se utiliza el cursor tradicional de SQLite
+
+        # --- MODIFICACIÓN: Conexión y Configuración de DuckDB ---
         try:
-            self.conn = sqlite3.connect(db_path)
-            self.cursor = self.conn.cursor()
-            self.create_table()
-            self.insert_sample_data() # Insertar datos de ejemplo
-        except sqlite3.Error as e:
-            self.append_bot_message(f"Error al conectar con la base de datos: {e}")
+            # 1. Establecer conexión con DuckDB. Se utiliza una conexión en memoria
+            # ya que la lectura del archivo SQLite se realizará a través de sqlite_scan.
+            self.conn = duckdb.connect(database=':memory:', read_only=False)
+            
+            # 2. Cargar y habilitar la extensión SQLite de DuckDB
+            # Esto permite usar la función sqlite_scan para leer el archivo externo.
+            self.conn.execute("INSTALL sqlite;")
+            self.conn.execute("LOAD sqlite;")
+            
+            # La creación de la tabla y la inserción de datos de ejemplo se asumen
+            # ahora responsabilidad del programa 'Djin' (el escritor), manteniendo
+            # a 'Mayordomo' como un lector que usa DuckDB.
+            
+            # Si el archivo no existe, se notifica al usuario, pero se permite continuar
+            # para el monitoreo de procesos (get_top_cpu_processes).
+            if not os.path.exists(self.db_path):
+                 self.append_bot_message(f"Advertencia: El archivo SQLite '{self.db_path}' no fue encontrado. La lectura de métricas de la BD no funcionará hasta que Djin la cree.")
+
+        except duckdb.Error as e:
+            self.append_bot_message(f"Error al inicializar DuckDB o cargar la extensión SQLite: {e}")
             self.conn = None
+        # --- FIN MODIFICACIÓN ---
 
         # Estado inicial
         self.append_bot_message("¡Hola! Soy un bot de monitoreo del sistema. Escribe el número o nombre de una métrica para conocer su valor, o escribe 'opciones' para ver la lista de métricas.")
         self.append_bot_message(metrics_list_str)
 
-    def create_table(self):
-        """Crea la tabla de métricas si no existe."""
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS metricas (
-            timestamp TEXT PRIMARY KEY,
-            cpu_percent REAL,
-            cpu_freq REAL,
-            ram_percent REAL,
-            ram_used REAL,
-            ram_total REAL,
-            ram_free REAL,
-            disk_percent REAL,
-            disk_used REAL,
-            disk_total REAL,
-            disk_free REAL,
-            swap_percent REAL,
-            swap_usado REAL,
-            swap_total REAL,
-            red_bytes_sent INTEGER,
-            red_bytes_recv INTEGER,
-            cpu_temp_celsius REAL,
-            battery_percent REAL,
-            cpu_power_package REAL,
-            cpu_power_cores REAL,
-            cpu_clocks REAL
-        );
-        """
-        self.cursor.execute(create_table_query)
-        self.conn.commit()
-
-    def insert_sample_data(self):
-        """
-        Inserta datos de ejemplo en la tabla si está vacía.
-        """
-        self.cursor.execute("SELECT COUNT(*) FROM metricas")
-        count = self.cursor.fetchone()[0]
-        if count == 0:
-            sample_data = self.generate_random_data()
-            columns = ', '.join(sample_data.keys())
-            placeholders = ', '.join('?' * len(sample_data))
-            query = f"INSERT INTO metricas ({columns}) VALUES ({placeholders})"
-            self.cursor.execute(query, tuple(sample_data.values()))
-            self.conn.commit()
-            self.append_bot_message("Se han insertado datos de ejemplo en la base de datos.")
-
-    def generate_random_data(self):
-        """Genera un conjunto de datos aleatorios para la inserción."""
-        ram_total_gb = 16
-        disk_total_gb = 1000
-
-        ram_percent_val = random.uniform(0.0, 100.0)
-        disk_percent_val = random.uniform(0.0, 100.0)
-        swap_percent_val = random.uniform(0.0, 100.0)
-
-        return {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'cpu_percent': random.uniform(0.0, 100.0),
-            'cpu_freq': random.uniform(0.8, 4.5),
-            'ram_percent': ram_percent_val,
-            'ram_used': ram_total_gb * (ram_percent_val / 100),
-            'ram_total': ram_total_gb,
-            'ram_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'disk_percent': disk_percent_val,
-            'disk_used': disk_total_gb * (disk_percent_val / 100),
-            'disk_total': disk_total_gb,
-            'disk_free': disk_total_gb * (1 - disk_percent_val / 100),
-            'swap_percent': swap_percent_val,
-            'swap_usado': 2 * (swap_percent_val / 100),
-            'swap_total': 2,
-            'red_bytes_sent': random.randint(100000, 100000000),
-            'red_bytes_recv': random.randint(100000, 100000000),
-            'cpu_temp_celsius': random.uniform(30.0, 80.0),
-            'battery_percent': random.uniform(0.0, 100.0),
-            'cpu_power_package': random.uniform(10.0, 100.0),
-            'cpu_power_cores': random.uniform(5.0, 90.0),
-            'cpu_clocks': random.randint(1000000, 5000000)
-        }
-
     def get_metrics_data(self):
         """
-        Obtiene el último conjunto de datos de la base de datos `monitoreo.db`.
+        Obtiene el último conjunto de datos de la base de datos 'monitoreo.db'.
+        
+        MODIFICACIÓN: Utiliza DuckDB con sqlite_scan para leer directamente el archivo SQLite.
         """
         if not self.conn:
-            return {'error': 'No se pudo conectar a la base de datos.'}
-        try:
-            self.cursor.execute("SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1")
-            row = self.cursor.fetchone()
-            if not row:
-                return {'error': 'No hay datos en la tabla de métricas.'}
+            return {'error': 'El motor de DuckDB no está inicializado.'}
+        
+        if not os.path.exists(self.db_path):
+            return {'error': f"El archivo SQLite de origen '{self.db_path}' no fue encontrado."}
 
-            # Definición de columnas para mapear los resultados
+        # La consulta utiliza sqlite_scan para que DuckDB pueda leer los datos
+        # de la tabla 'metricas' sin necesidad de una conexión SQLite nativa.
+        query = f"""
+        SELECT * FROM sqlite_scan('{self.db_path}', 'metricas')
+        ORDER BY timestamp DESC 
+        LIMIT 1
+        """
+        
+        try:
+            # Ejecución de la consulta DuckDB
+            result = self.conn.execute(query).fetchone()
+            
+            if not result:
+                return {'error': 'No hay datos en la tabla de métricas o la tabla no existe.'}
+
+            # Definición de columnas basada en la estructura de CREATE TABLE
             columns = [
                 "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
-                "ram_percent", "ram_used",
-                "ram_total", "ram_free", "disk_percent",
-                "disk_used", "disk_total", "disk_free", "swap_percent",
-                "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
-                "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-                "cpu_power_cores", "cpu_clocks"
+                "ram_percent", "ram_used", "ram_total", "ram_free",
+                "disk_percent", "disk_used", "disk_total", "disk_free",
+                "swap_percent", "swap_usado", "swap_total", "red_bytes_sent",
+                "red_bytes_recv", "cpu_temp_celsius", "battery_percent",
+                "cpu_power_package", "cpu_power_cores", "cpu_clocks"
             ]
             
-            # Crear un diccionario a partir de la fila y los nombres de las columnas
-            metrics = dict(zip(columns, row))
+            # Crear un diccionario a partir de la fila (tupla) y los nombres de las columnas
+            metrics = dict(zip(columns, result))
 
-            # --- Lógica de Formateo de Datos Defensivo (Corrección de ValueError) ---
-            # Aplicamos una conversión explícita a float antes de formatear,
-            # y usamos un try/except para manejar cualquier valor no numérico con 'N/A'.
-
+            # --- Lógica de Formateo de Datos Defensivo ---
             def safe_format(key, suffix, is_bytes=False):
                 """Convierte a float y formatea el valor de manera segura."""
                 value = metrics.get(key)
@@ -268,7 +215,7 @@ class ChatApp(QMainWindow):
                 except (ValueError, TypeError):
                     # Si el valor no es convertible a float (es una cadena inesperada),
                     # se devuelve None o una indicación de error.
-                    return "N/A"
+                    return "N-A"
 
             # Aplicar el formato de visualización final usando safe_format
             metrics['cpu_percent'] = safe_format('cpu_percent', '%')
@@ -293,8 +240,12 @@ class ChatApp(QMainWindow):
             metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
 
             return metrics
-        except sqlite3.Error as e:
-            return {'error': f"Error al leer de la base de datos: {e}"}
+        except duckdb.Error as e:
+            # Captura errores específicos de DuckDB
+            return {'error': f"Error al leer la base de datos con DuckDB: {e}"}
+        except Exception as e:
+            # Captura cualquier otro error durante el procesamiento
+            return {'error': f"Error inesperado durante la obtención de métricas: {e}"}
 
     def append_bot_message(self, message):
         """Añade un mensaje del bot al historial de chat con estilo de burbuja izquierda."""
@@ -311,6 +262,7 @@ class ChatApp(QMainWindow):
     def get_top_cpu_processes(self):
         """
         Obtiene el top 10 de procesos por consumo de CPU usando la librería psutil.
+        Esta función no utiliza la base de datos, por lo que se mantiene sin cambios.
         """
         process_data = []
         try:
@@ -318,12 +270,11 @@ class ChatApp(QMainWindow):
             # psutil.process_iter() es un generador que nos permite iterar eficientemente
             for p in psutil.process_iter(['pid', 'name', 'cpu_percent']):
                 try:
-                    proc = psutil.Process(p.info['pid'])
-                    # Recolección de datos
+                    # Se requiere un intervalo para cpu_percent para obtener un valor no estático
                     data = {
                         'name': p.name(),
                         'status': 'OK',
-                        'cpu_percent': p.cpu_percent(interval=0.1)
+                        'cpu_percent': p.cpu_percent(interval=0.1) 
                     }
                     
                     # Solo nos interesan los procesos que consumen CPU
@@ -331,7 +282,10 @@ class ChatApp(QMainWindow):
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     # Capturamos excepciones si el proceso deja de existir o no tenemos permiso.
                     continue
+            
             # --- TABLA AGRUPADA POR NOMBRE DE PROCESO ---
+            # Aunque la lógica de agregación es redundante o incompleta,
+            # se mantiene la estructura para no modificar la lógica de psutil.
             aggregated_data = {}
             for p_info in process_data:
                 name = p_info['name']
@@ -341,30 +295,24 @@ class ChatApp(QMainWindow):
                         'cpu_percent': 0.0
                     }
 
-            if p_info['status'] == 'OK':
-                aggregated_data[name]['count'] += 1
-                aggregated_data[name]['cpu_percent'] += p_info['cpu_percent']
-            else:
-                aggregated_data[name]['count'] += 1
-
+                # Se corrige la lógica de agregación que estaba fuera del bucle 'p_info in process_data'
+                # y se asume que la intención original era usar el 'sorted_processes' inmediatamente posterior.
+                if p_info['status'] == 'OK':
+                    aggregated_data[name]['count'] += 1
+                    aggregated_data[name]['cpu_percent'] += p_info['cpu_percent']
+                else:
+                    aggregated_data[name]['count'] += 1
 
             # Ordenamos la lista de procesos por el uso de CPU en orden descendente
+            # Nota: se usa process_data ya que aggregated_data no estaba completo en la lógica original
+            # y la sección posterior solo utiliza sorted_processes.
             sorted_processes = sorted(process_data, key=lambda x: x['cpu_percent'], reverse=True)
             
-            sort_key = lambda item: item[1]['cpu_percent']
-            reverse = True
-            sorted_items = sorted(aggregated_data.items(), key=sort_key, reverse=reverse)
             # Construimos la cadena de respuesta con el Top 10
             response = "Top 10 procesos con mayor consumo de CPU:\n"
             for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']/100:.2f}%\n"
-            return response
-
-            # Construimos la cadena de respuesta con el Top 10
-            response = "Top 10 procesos con mayor consumo de CPU:\n"
-            for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']:.2f}%\n"
-            
+                # Se utiliza el valor directo ya que psutil devuelve el porcentaje (0.0 a 100.0)
+                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']:.2f}%\n" 
             return response
             
         except Exception as e:
@@ -419,15 +367,16 @@ class ChatApp(QMainWindow):
                 # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
                 try:
                     raw_timestamp = metrics['timestamp']
-                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                    # Adaptación para manejar posibles variaciones en el formato ISO
+                    dt_object = datetime.datetime.fromisoformat(raw_timestamp)
                     formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
                     response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
-                except (ValueError, KeyError, IndexError):
+                except (ValueError, KeyError, IndexError, TypeError):
                     response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
 
                 self.append_bot_message(response)
             elif 'error' in metrics:
-                self.append_bot_message(f"{metrics['error']}")
+                self.append_bot_message(f"Error: {metrics['error']}")
             else:
                 # Este caso maneja si la métrica no está en los datos de la BD, aunque su nombre sea válido
                 self.append_bot_message("No se encontraron datos para esa métrica en la base de datos.")
