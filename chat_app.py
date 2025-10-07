@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
-# Título: Monitor de Métricas del Sistema Interactivo
+# Título: Monitor de Métricas del Sistema Interactivo (Usando DuckDB y Parquet)
 
 """
 Este script crea una aplicación de escritorio con PyQt6 que actúa como un
 monitor de sistema interactivo. El usuario puede escribir el nombre de una
-métrica de sistema para obtener un valor almacenado en una base de datos SQLite.
-Ahora también incluye la opción para obtener el Top 10 de procesos por consumo de CPU.
+métrica de sistema para obtener un valor almacenado en archivos Parquet
+utilizando DuckDB.
 
 Para su correcto funcionamiento, necesitas instalar las librerías:
 pip install pyqt6
 pip install psutil
+pip install duckdb
+pip install pandas # DuckDB a menudo se usa con pandas, aunque aquí es opcional.
 
 Uso:
 1. Asegúrate de tener Python instalado.
-2. Instala PyQt6 y psutil usando pip.
+2. Instala PyQt6, psutil y duckdb usando pip.
 3. Ejecuta este script desde la línea de comandos: python chat_app.py
 """
 
 import sys
-import time
-import random
-import psutil
-import sqlite3
 import os
 import datetime
+import psutil
+import duckdb # Importación de DuckDB
+# Importaciones de PyQt6
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
                              QWidget, QTextEdit, QLineEdit, QLabel)
 from PyQt6.QtCore import Qt
@@ -31,11 +32,12 @@ from PyQt6.QtCore import Qt
 class ChatApp(QMainWindow):
     """
     Clase principal de la aplicación que crea la ventana y gestiona la lógica
-    del chat para mostrar las métricas del sistema.
+    del chat para mostrar las métricas del sistema, leyendo desde archivos Parquet
+    con DuckDB.
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Simulador de Chat de Métricas")
+        self.setWindowTitle("Simulador de Chat de Métricas (DuckDB)")
         self.setGeometry(100, 100, 600, 800)
         self.setStyleSheet("""
             QMainWindow {
@@ -99,22 +101,46 @@ class ChatApp(QMainWindow):
         self.user_input.returnPressed.connect(self.handle_input)
         self.layout.addWidget(self.user_input)
 
-        # Definir la lista de métricas, ahora con la opción 26
+        # -------------------------------------------------------------------
+        # Inicialización de DuckDB y configuración de rutas
+        # -------------------------------------------------------------------
+        self.duck_conn = None
+        # La ruta de búsqueda de DuckDB para los archivos Parquet
+        # El patrón '*' permite leer todos los archivos parquet en la carpeta.
+        self.parquet_path = os.path.join(os.getcwd(), 'data', 'metricas', '*.parquet')
+        
+        try:
+            # Conexión a DuckDB en modo en memoria.
+            # DuckDB se usará para consultar los archivos Parquet directamente.
+            self.duck_conn = duckdb.connect(database=':memory:', read_only=False)
+            self.duck_conn.execute("SET enable_progress_bar=false;")
+            self.append_bot_message("Conexión a DuckDB establecida. Leyendo datos desde archivos Parquet.")
+            
+            # Verificación inicial de la existencia de archivos
+            if not self._check_parquet_files():
+                 self.append_bot_message(f"Advertencia: No se encontraron archivos Parquet en la ruta: {os.path.dirname(self.parquet_path)}")
+                 self.append_bot_message("Por favor, asegúrese de que el programa 'Djin' haya generado métricas.")
+
+        except Exception as e:
+            self.append_bot_message(f"Error al inicializar DuckDB: {e}")
+            self.duck_conn = None
+        
+        # Definir la lista de métricas (incluyendo las nuevas columnas y top_10_cpu)
         self.metric_names = [
-            "cpu_percent", "cpu_freq",
+            "hostname", "username", "cpu_percent", "cpu_freq",
             "ram_percent", "ram_used",
             "ram_total", "ram_free", "disk_percent",
             "disk_used", "disk_total", "disk_free", "swap_percent",
             "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
             "cpu_temp_celsius", "battery_percent", "cpu_power_package",
             "cpu_power_cores", "cpu_clocks",
-            "top_10_cpu"  # Agregamos la nueva métrica aquí
+            "top_10_cpu"  # Métrica de procesos en vivo
         ]
         
         # Diccionario para mapear nombres originales a nombres formateados
         self.formatted_metric_names = {name: " ".join(part.capitalize() for part in name.split('_')) for name in self.metric_names}
         # Sobreescribir el formato de la nueva métrica
-        self.formatted_metric_names["top_10_cpu"] = "Top 10 Apps High CPU"
+        self.formatted_metric_names["top_10_cpu"] = "Top 10 Apps High CPU (Live)"
 
         # Construir la lista de métricas para el mensaje inicial
         metrics_list_str = "Bot: Métricas disponibles:\n"
@@ -122,155 +148,81 @@ class ChatApp(QMainWindow):
             formatted_name = self.formatted_metric_names[name]
             metrics_list_str += f"{i}. {formatted_name}\n"
         
-        # Conexión a la base de datos
-        self.conn = None
-        self.cursor = None
-        
-        # Ruta de la base de datos especificada por el usuario
-        db_path = "./data/monitoreo.db"
-        
-        try:
-            self.conn = sqlite3.connect(db_path)
-            self.cursor = self.conn.cursor()
-            self.create_table()
-            self.insert_sample_data() # Insertar datos de ejemplo
-        except sqlite3.Error as e:
-            self.append_bot_message(f"Error al conectar con la base de datos: {e}")
-            self.conn = None
-
         # Estado inicial
-        self.append_bot_message("¡Hola! Soy un bot de monitoreo del sistema. Escribe el número o nombre de una métrica para conocer su valor, o escribe 'opciones' para ver la lista de métricas.")
+        self.append_bot_message("¡Hola! Soy Mayordomo, un bot de monitoreo del sistema. Escribe el número o nombre de una métrica para conocer su valor, o escribe 'opciones' para ver la lista de métricas.")
         self.append_bot_message(metrics_list_str)
 
-    def create_table(self):
-        """Crea la tabla de métricas si no existe."""
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS metricas (
-            timestamp TEXT PRIMARY KEY,
-            cpu_percent REAL,
-            cpu_freq REAL,
-            ram_percent REAL,
-            ram_used REAL,
-            ram_total REAL,
-            ram_free REAL,
-            disk_percent REAL,
-            disk_used REAL,
-            disk_total REAL,
-            disk_free REAL,
-            swap_percent REAL,
-            swap_usado REAL,
-            swap_total REAL,
-            red_bytes_sent INTEGER,
-            red_bytes_recv INTEGER,
-            cpu_temp_celsius REAL,
-            battery_percent REAL,
-            cpu_power_package REAL,
-            cpu_power_cores REAL,
-            cpu_clocks REAL
-        );
-        """
-        self.cursor.execute(create_table_query)
-        self.conn.commit()
-
-    def insert_sample_data(self):
-        """
-        Inserta datos de ejemplo en la tabla si está vacía.
-        """
-        self.cursor.execute("SELECT COUNT(*) FROM metricas")
-        count = self.cursor.fetchone()[0]
-        if count == 0:
-            sample_data = self.generate_random_data()
-            columns = ', '.join(sample_data.keys())
-            placeholders = ', '.join('?' * len(sample_data))
-            query = f"INSERT INTO metricas ({columns}) VALUES ({placeholders})"
-            self.cursor.execute(query, tuple(sample_data.values()))
-            self.conn.commit()
-            self.append_bot_message("Se han insertado datos de ejemplo en la base de datos.")
-
-    def generate_random_data(self):
-        """Genera un conjunto de datos aleatorios para la inserción."""
-        ram_total_gb = 16
-        disk_total_gb = 1000
-
-        ram_percent_val = random.uniform(0.0, 100.0)
-        disk_percent_val = random.uniform(0.0, 100.0)
-        swap_percent_val = random.uniform(0.0, 100.0)
-
-        return {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'cpu_percent': random.uniform(0.0, 100.0),
-            'cpu_freq': random.uniform(0.8, 4.5),
-            'ram_percent': ram_percent_val,
-            'ram_used': ram_total_gb * (ram_percent_val / 100),
-            'ram_total': ram_total_gb,
-            'ram_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'disk_percent': disk_percent_val,
-            'disk_used': disk_total_gb * (disk_percent_val / 100),
-            'disk_total': disk_total_gb,
-            'disk_free': disk_total_gb * (1 - disk_percent_val / 100),
-            'swap_percent': swap_percent_val,
-            'swap_usado': 2 * (swap_percent_val / 100),
-            'swap_total': 2,
-            'red_bytes_sent': random.randint(100000, 100000000),
-            'red_bytes_recv': random.randint(100000, 100000000),
-            'cpu_temp_celsius': random.uniform(30.0, 80.0),
-            'battery_percent': random.uniform(0.0, 100.0),
-            'cpu_power_package': random.uniform(10.0, 100.0),
-            'cpu_power_cores': random.uniform(5.0, 90.0),
-            'cpu_clocks': random.randint(1000000, 5000000)
-        }
+    def _check_parquet_files(self):
+        """Verifica si existen archivos Parquet en la ruta configurada."""
+        import glob
+        return bool(glob.glob(self.parquet_path))
 
     def get_metrics_data(self):
         """
-        Obtiene el último conjunto de datos de la base de datos `monitoreo.db`.
+        Obtiene el último conjunto de datos leyendo los archivos Parquet
+        mediante una consulta SQL de DuckDB.
         """
-        if not self.conn:
-            return {'error': 'No se pudo conectar a la base de datos.'}
+        if not self.duck_conn:
+            return {'error': 'No se pudo conectar a DuckDB.'}
+        
+        # Definición de columnas esperadas (ajustada para incluir hostname y username)
+        columns = [
+            "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
+            "ram_percent", "ram_used", "ram_total", "ram_free", "disk_percent",
+            "disk_used", "disk_total", "disk_free", "swap_percent",
+            "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
+            "cpu_temp_celsius", "battery_percent", "cpu_power_package",
+            "cpu_power_cores", "cpu_clocks"
+        ]
+
+        # La consulta DuckDB utiliza el operador de tabla virtual read_parquet
+        # para escanear todos los archivos en el patrón.
+        # Luego ordena por timestamp (TEXT) y toma el último registro.
+        query = f"""
+        SELECT *
+        FROM read_parquet('{self.parquet_path}')
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """
+
         try:
-            self.cursor.execute("SELECT * FROM metricas ORDER BY timestamp DESC LIMIT 1")
-            row = self.cursor.fetchone()
-            if not row:
-                return {'error': 'No hay datos en la tabla de métricas.'}
-
-            # Definición de columnas para mapear los resultados
-            columns = [
-                "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
-                "ram_percent", "ram_used",
-                "ram_total", "ram_free", "disk_percent",
-                "disk_used", "disk_total", "disk_free", "swap_percent",
-                "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
-                "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-                "cpu_power_cores", "cpu_clocks"
-            ]
+            result = self.duck_conn.execute(query).fetchone()
             
+            if not result:
+                return {'error': f'No hay datos en los archivos Parquet en {os.path.dirname(self.parquet_path)}.'}
+
             # Crear un diccionario a partir de la fila y los nombres de las columnas
-            metrics = dict(zip(columns, row))
+            metrics = dict(zip(columns, result))
 
-            # --- Lógica de Formateo de Datos Defensivo (Corrección de ValueError) ---
-            # Aplicamos una conversión explícita a float antes de formatear,
-            # y usamos un try/except para manejar cualquier valor no numérico con 'N/A'.
-
+            # --- Lógica de Formateo de Datos Defensivo ---
             def safe_format(key, suffix, is_bytes=False):
                 """Convierte a float y formatea el valor de manera segura."""
                 value = metrics.get(key)
+                # Manejar valores de texto (hostname, username, timestamp)
+                if isinstance(value, str):
+                    return value
+                
                 if value is None:
                     return None
                 
                 try:
-                    # Intenta convertir a float. Si falla, salta al 'except'.
+                    # Intenta convertir a float, si ya es numérico, funciona igual.
                     numeric_value = float(value)
                     
                     if is_bytes:
                         # Convertir de bytes a MB para red
+                        # Se usa 1024**2 para conversión a MiB (Mebibytes)
                         return f"{numeric_value / (1024**2):.2f} {suffix}"
                     
+                    # Formateo general con 2 decimales
                     return f"{numeric_value:.2f} {suffix}"
                 except (ValueError, TypeError):
-                    # Si el valor no es convertible a float (es una cadena inesperada),
-                    # se devuelve None o una indicación de error.
+                    # Si el valor no es convertible a numérico
                     return "N/A"
 
             # Aplicar el formato de visualización final usando safe_format
+            metrics['hostname'] = safe_format('hostname', '')
+            metrics['username'] = safe_format('username', '')
             metrics['cpu_percent'] = safe_format('cpu_percent', '%')
             metrics['cpu_freq'] = safe_format('cpu_freq', 'MHz')
             metrics['ram_percent'] = safe_format('ram_percent', '%')
@@ -293,8 +245,12 @@ class ChatApp(QMainWindow):
             metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
 
             return metrics
-        except sqlite3.Error as e:
-            return {'error': f"Error al leer de la base de datos: {e}"}
+            
+        except duckdb.ParserException:
+             # DuckDB lanza esta excepción si la consulta falla (ej. archivos corruptos)
+             return {'error': 'Error de DuckDB al parsear la consulta o leer los archivos Parquet. Verifique que los archivos no estén corruptos.'}
+        except Exception as e:
+            return {'error': f"Error general al leer los datos de métricas con DuckDB: {e}"}
 
     def append_bot_message(self, message):
         """Añade un mensaje del bot al historial de chat con estilo de burbuja izquierda."""
@@ -310,60 +266,43 @@ class ChatApp(QMainWindow):
 
     def get_top_cpu_processes(self):
         """
-        Obtiene el top 10 de procesos por consumo de CPU usando la librería psutil.
+        Obtiene el top 10 de procesos por consumo de CPU usando la librería psutil (Lógica en vivo).
+        Esta función se mantiene sin cambios ya que lee datos del sistema operativo en tiempo real.
         """
         process_data = []
         try:
-            # Iteramos sobre todos los procesos para obtener nombre y uso de CPU
-            # psutil.process_iter() es un generador que nos permite iterar eficientemente
+            # Obtenemos la información de los procesos
             for p in psutil.process_iter(['pid', 'name', 'cpu_percent']):
                 try:
-                    proc = psutil.Process(p.info['pid'])
-                    # Recolección de datos
+                    # Obtenemos el porcentaje de CPU con un intervalo de 0.1 segundos
                     data = {
                         'name': p.name(),
-                        'status': 'OK',
                         'cpu_percent': p.cpu_percent(interval=0.1)
                     }
-                    
-                    # Solo nos interesan los procesos que consumen CPU
                     process_data.append(data)
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     # Capturamos excepciones si el proceso deja de existir o no tenemos permiso.
                     continue
-            # --- TABLA AGRUPADA POR NOMBRE DE PROCESO ---
+            
+            # Agrupamos los procesos por nombre y sumamos el uso de CPU
             aggregated_data = {}
             for p_info in process_data:
                 name = p_info['name']
                 if name not in aggregated_data:
-                    aggregated_data[name] = {
-                        'count': 0,
-                        'cpu_percent': 0.0
-                    }
+                    aggregated_data[name] = 0.0
+                aggregated_data[name] += p_info['cpu_percent']
 
-            if p_info['status'] == 'OK':
-                aggregated_data[name]['count'] += 1
-                aggregated_data[name]['cpu_percent'] += p_info['cpu_percent']
-            else:
-                aggregated_data[name]['count'] += 1
-
-
-            # Ordenamos la lista de procesos por el uso de CPU en orden descendente
-            sorted_processes = sorted(process_data, key=lambda x: x['cpu_percent'], reverse=True)
+            # Convertimos a lista para ordenar
+            sorted_processes = sorted(aggregated_data.items(), key=lambda item: item[1], reverse=True)
             
-            sort_key = lambda item: item[1]['cpu_percent']
-            reverse = True
-            sorted_items = sorted(aggregated_data.items(), key=sort_key, reverse=reverse)
             # Construimos la cadena de respuesta con el Top 10
-            response = "Top 10 procesos con mayor consumo de CPU:\n"
-            for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']/100:.2f}%\n"
-            return response
-
-            # Construimos la cadena de respuesta con el Top 10
-            response = "Top 10 procesos con mayor consumo de CPU:\n"
-            for i, proc in enumerate(sorted_processes[:10]):
-                response += f"{i+1}. {proc['name']} - {proc['cpu_percent']:.2f}%\n"
+            response = "Top 10 procesos con mayor consumo de CPU (en vivo):\n"
+            if not sorted_processes:
+                 response += "No se pudieron obtener datos de procesos."
+            else:
+                for i, (name, cpu_percent) in enumerate(sorted_processes[:10]):
+                    # Formateamos el porcentaje para mostrarlo limpiamente
+                    response += f"{i+1}. {name} - {cpu_percent:.2f}%\n"
             
             return response
             
@@ -381,7 +320,7 @@ class ChatApp(QMainWindow):
 
         self.append_user_message(user_text)
 
-        # Si el usuario escribe "opciones", mostrar la lista de métricas
+        # Lógica de manejo de entrada... (sin cambios aquí)
         if user_text == "opciones":
             metrics_list_str = "Bot: Métricas disponibles:\n"
             for i, name in enumerate(self.metric_names, 1):
@@ -408,29 +347,36 @@ class ChatApp(QMainWindow):
         # Verificamos si la métrica solicitada es la del Top 10 CPU
         if metric_key == "top_10_cpu":
             result = self.get_top_cpu_processes()
-            print(result)  # Para depuración en consola
             self.append_bot_message(result)
         elif metric_key in self.metric_names:
             metrics = self.get_metrics_data()
             
             if metric_key in metrics:
-                formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
-                
-                # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
-                try:
-                    raw_timestamp = metrics['timestamp']
-                    dt_object = datetime.datetime.strptime(raw_timestamp.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                    formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
-                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
-                except (ValueError, KeyError, IndexError):
-                    response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
+                # Caso especial para métricas de texto que no requieren timestamp
+                if metric_key in ["hostname", "username"]:
+                    response = f"El valor de '{self.formatted_metric_names.get(metric_key, metric_key)}' es: {metrics[metric_key]}"
+                else:
+                    formatted_name = self.formatted_metric_names.get(metric_key, metric_key)
+                    
+                    # Formatear el timestamp a 'hh:MM:SS dd/mm/yyyy'
+                    try:
+                        raw_timestamp = metrics.get('timestamp')
+                        if raw_timestamp:
+                            # Intenta convertir el timestamp (asumiendo formato ISO 8601)
+                            dt_object = datetime.datetime.fromisoformat(raw_timestamp.split('+')[0]) # Manejar zonas horarias opcionales
+                            formatted_timestamp = dt_object.strftime("%H:%M:%S %d/%m/%Y")
+                            response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: {formatted_timestamp})"
+                        else:
+                            response = f"El valor de '{formatted_name}' es: {metrics[metric_key]} (Última actualización: N/A)"
+                    except (ValueError, KeyError, IndexError):
+                        # Manejar el caso de error en el timestamp
+                        response = f"El valor de '{formatted_name}' es: {metrics[metric_key]}"
 
                 self.append_bot_message(response)
             elif 'error' in metrics:
-                self.append_bot_message(f"{metrics['error']}")
+                self.append_bot_message(f"Error al obtener métrica: {metrics['error']}")
             else:
-                # Este caso maneja si la métrica no está en los datos de la BD, aunque su nombre sea válido
-                self.append_bot_message("No se encontraron datos para esa métrica en la base de datos.")
+                self.append_bot_message("No se encontraron datos recientes para esa métrica. Verifique si hay archivos Parquet disponibles.")
         else:
             # Métrica no válida, ni por número ni por nombre
             metrics_list_str = "Métrica no válida. Por favor, escribe el número o nombre exacto de la métrica.\n\nBot: Métricas disponibles:\n"
@@ -442,6 +388,9 @@ class ChatApp(QMainWindow):
         self.user_input.clear()
         
 if __name__ == '__main__':
+    # Aseguramos que la carpeta data/metricas exista para evitar errores de DuckDB si es necesario
+    os.makedirs(os.path.join('data', 'metricas'), exist_ok=True)
+    
     app = QApplication(sys.argv)
     chat_app = ChatApp()
     chat_app.show()
