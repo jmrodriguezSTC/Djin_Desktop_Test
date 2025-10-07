@@ -101,13 +101,13 @@ class ChatApp(QMainWindow):
 
         # Definir la lista de métricas, ahora con la opción 26
         self.metric_names = [
-            "cpu_percent", "cpu_load_percent", "cpu_freq",
-            "ram_percent", "ram_load_percent", "ram_used", "ram_load_used",
-            "ram_total", "ram_free", "ram_load_free", "disco_percent",
+            "cpu_percent", "cpu_freq",
+            "ram_percent", "ram_used",
+            "ram_total", "ram_free", "disk_percent",
             "disk_used", "disk_total", "disk_free", "swap_percent",
             "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
             "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-            "cpu_power_cores", "cpu_clocks", "hdd_used",
+            "cpu_power_cores", "cpu_clocks",
             "top_10_cpu"  # Agregamos la nueva métrica aquí
         ]
         
@@ -148,16 +148,12 @@ class ChatApp(QMainWindow):
         CREATE TABLE IF NOT EXISTS metricas (
             timestamp TEXT PRIMARY KEY,
             cpu_percent REAL,
-            cpu_load_percent REAL,
             cpu_freq REAL,
             ram_percent REAL,
-            ram_load_percent REAL,
             ram_used REAL,
-            ram_load_used REAL,
             ram_total REAL,
             ram_free REAL,
-            ram_load_free REAL,
-            disco_percent REAL,
+            disk_percent REAL,
             disk_used REAL,
             disk_total REAL,
             disk_free REAL,
@@ -170,8 +166,7 @@ class ChatApp(QMainWindow):
             battery_percent REAL,
             cpu_power_package REAL,
             cpu_power_cores REAL,
-            cpu_clocks REAL,
-            hdd_used REAL
+            cpu_clocks REAL
         );
         """
         self.cursor.execute(create_table_query)
@@ -204,16 +199,12 @@ class ChatApp(QMainWindow):
         return {
             'timestamp': datetime.datetime.now().isoformat(),
             'cpu_percent': random.uniform(0.0, 100.0),
-            'cpu_load_percent': random.uniform(0.0, 100.0),
             'cpu_freq': random.uniform(0.8, 4.5),
             'ram_percent': ram_percent_val,
-            'ram_load_percent': ram_percent_val,
             'ram_used': ram_total_gb * (ram_percent_val / 100),
-            'ram_load_used': ram_total_gb * (ram_percent_val / 100),
             'ram_total': ram_total_gb,
             'ram_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'ram_load_free': ram_total_gb * (1 - ram_percent_val / 100),
-            'disco_percent': disk_percent_val,
+            'disk_percent': disk_percent_val,
             'disk_used': disk_total_gb * (disk_percent_val / 100),
             'disk_total': disk_total_gb,
             'disk_free': disk_total_gb * (1 - disk_percent_val / 100),
@@ -226,8 +217,7 @@ class ChatApp(QMainWindow):
             'battery_percent': random.uniform(0.0, 100.0),
             'cpu_power_package': random.uniform(10.0, 100.0),
             'cpu_power_cores': random.uniform(5.0, 90.0),
-            'cpu_clocks': random.randint(1000000, 5000000),
-            'hdd_used': random.uniform(0, disk_total_gb)
+            'cpu_clocks': random.randint(1000000, 5000000)
         }
 
     def get_metrics_data(self):
@@ -242,91 +232,66 @@ class ChatApp(QMainWindow):
             if not row:
                 return {'error': 'No hay datos en la tabla de métricas.'}
 
+            # Definición de columnas para mapear los resultados
             columns = [
-                "timestamp", "cpu_percent", "cpu_load_percent", "cpu_freq",
-                "ram_percent", "ram_load_percent", "ram_used", "ram_load_used",
-                "ram_total", "ram_free", "ram_load_free", "disco_percent",
+                "timestamp", "hostname", "username", "cpu_percent", "cpu_freq",
+                "ram_percent", "ram_used",
+                "ram_total", "ram_free", "disk_percent",
                 "disk_used", "disk_total", "disk_free", "swap_percent",
                 "swap_usado", "swap_total", "red_bytes_sent", "red_bytes_recv",
                 "cpu_temp_celsius", "battery_percent", "cpu_power_package",
-                "cpu_power_cores", "cpu_clocks", "hdd_used"
+                "cpu_power_cores", "cpu_clocks"
             ]
             
             # Crear un diccionario a partir de la fila y los nombres de las columnas
             metrics = dict(zip(columns, row))
 
-            # Formatear los datos para una mejor visualización, convirtiendo a float o int
-            # donde sea necesario.
-            for key in metrics:
-                # Si el valor es una cadena, limpiar el símbolo de '%' y convertir a float
-                if isinstance(metrics[key], str) and metrics[key].endswith('%'):
-                    metrics[key] = metrics[key].replace('%', '')
-                
-                if key in self.metric_names:
-                    if metrics[key] is not None:
-                        try:
-                            if key in ['red_bytes_sent', 'red_bytes_recv']:
-                                metrics[key] = int(metrics[key])
-                            else:
-                                metrics[key] = float(metrics[key])
-                        except (ValueError, TypeError):
-                             # Manejar casos donde la conversión falla
-                             pass
+            # --- Lógica de Formateo de Datos Defensivo (Corrección de ValueError) ---
+            # Aplicamos una conversión explícita a float antes de formatear,
+            # y usamos un try/except para manejar cualquier valor no numérico con 'N/A'.
 
-            # Aplicar el formato deseado
-            if 'cpu_percent' in metrics and metrics['cpu_percent'] is not None:
-                metrics['cpu_percent'] = f"{metrics['cpu_percent']:.2f}%"
-            if 'cpu_load_percent' in metrics and metrics['cpu_load_percent'] is not None:
-                metrics['cpu_load_percent'] = f"{metrics['cpu_load_percent']:.2f}%"
-            if 'cpu_freq' in metrics and metrics['cpu_freq'] is not None:
-                metrics['cpu_freq'] = f"{metrics['cpu_freq']:.2f} MHz"
-            if 'ram_percent' in metrics and metrics['ram_percent'] is not None:
-                metrics['ram_percent'] = f"{metrics['ram_percent']:.2f}%"
-            if 'ram_load_percent' in metrics and metrics['ram_load_percent'] is not None:
-                metrics['ram_load_percent'] = f"{metrics['ram_load_percent']:.2f}%"
-            if 'ram_used' in metrics and metrics['ram_used'] is not None:
-                metrics['ram_used'] = f"{metrics['ram_used']:.2f} GB"
-            if 'ram_load_used' in metrics and metrics['ram_load_used'] is not None:
-                metrics['ram_load_used'] = f"{metrics['ram_load_used']:.2f} GB"
-            if 'ram_total' in metrics and metrics['ram_total'] is not None:
-                metrics['ram_total'] = f"{metrics['ram_total']:.2f} GB"
-            if 'ram_free' in metrics and metrics['ram_free'] is not None:
-                metrics['ram_free'] = f"{metrics['ram_free']:.2f} GB"
-            if 'ram_load_free' in metrics and metrics['ram_load_free'] is not None:
-                metrics['ram_load_free'] = f"{metrics['ram_load_free']:.2f} GB"
-            if 'disco_percent' in metrics and metrics['disco_percent'] is not None:
-                metrics['disco_percent'] = f"{metrics['disco_percent']:.2f}%"
-            if 'disk_used' in metrics and metrics['disk_used'] is not None:
-                metrics['disk_used'] = f"{metrics['disk_used']:.2f} GB"
-            if 'disk_total' in metrics and metrics['disk_total'] is not None:
-                metrics['disk_total'] = f"{metrics['disk_total']:.2f} GB"
-            if 'disk_free' in metrics and metrics['disk_free'] is not None:
-                metrics['disk_free'] = f"{metrics['disk_free']:.2f} GB"
-            if 'swap_percent' in metrics and metrics['swap_percent'] is not None:
-                metrics['swap_percent'] = f"{metrics['swap_percent']:.2f}%"
-            if 'swap_usado' in metrics and metrics['swap_usado'] is not None:
-                metrics['swap_usado'] = f"{metrics['swap_usado']:.2f} GB"
-            if 'swap_total' in metrics and metrics['swap_total'] is not None:
-                metrics['swap_total'] = f"{metrics['swap_total']:.2f} GB"
-            if 'red_bytes_sent' in metrics and metrics['red_bytes_sent'] is not None:
-                metrics['red_bytes_sent'] = f"{metrics['red_bytes_sent'] / (1024**2):.2f} MB"
-            if 'red_bytes_recv' in metrics and metrics['red_bytes_recv'] is not None:
-                metrics['red_bytes_recv'] = f"{metrics['red_bytes_recv'] / (1024**2):.2f} MB"
-            if 'cpu_temp_celsius' in metrics and metrics['cpu_temp_celsius'] is not None:
-                metrics['cpu_temp_celsius'] = f"{metrics['cpu_temp_celsius']:.2f} °C"
-            if 'battery_percent' in metrics and metrics['battery_percent'] is not None:
-                metrics['battery_percent'] = f"{metrics['battery_percent']:.2f}%"
-            if 'cpu_power_package' in metrics and metrics['cpu_power_package'] is not None:
-                metrics['cpu_power_package'] = f"{metrics['cpu_power_package']:.2f} W"
-            if 'cpu_power_cores' in metrics and metrics['cpu_power_cores'] is not None:
-                metrics['cpu_power_cores'] = f"{metrics['cpu_power_cores']:.2f} W"
-            if 'hdd_used' in metrics and metrics['hdd_used'] is not None:
-                metrics['hdd_used'] = f"{metrics['hdd_used']:.2f} %"
-            if 'cpu_clocks' in metrics and metrics['cpu_clocks'] is not None:
-                metrics['cpu_clocks'] = f"{metrics['cpu_clocks']:.2f} MHz"
-            
-            # El campo 'cpu_clocks' ya es un string en el ejemplo original, no necesita formato
-            
+            def safe_format(key, suffix, is_bytes=False):
+                """Convierte a float y formatea el valor de manera segura."""
+                value = metrics.get(key)
+                if value is None:
+                    return None
+                
+                try:
+                    # Intenta convertir a float. Si falla, salta al 'except'.
+                    numeric_value = float(value)
+                    
+                    if is_bytes:
+                        # Convertir de bytes a MB para red
+                        return f"{numeric_value / (1024**2):.2f} {suffix}"
+                    
+                    return f"{numeric_value:.2f} {suffix}"
+                except (ValueError, TypeError):
+                    # Si el valor no es convertible a float (es una cadena inesperada),
+                    # se devuelve None o una indicación de error.
+                    return "N/A"
+
+            # Aplicar el formato de visualización final usando safe_format
+            metrics['cpu_percent'] = safe_format('cpu_percent', '%')
+            metrics['cpu_freq'] = safe_format('cpu_freq', 'MHz')
+            metrics['ram_percent'] = safe_format('ram_percent', '%')
+            metrics['ram_used'] = safe_format('ram_used', 'GB')
+            metrics['ram_total'] = safe_format('ram_total', 'GB')
+            metrics['ram_free'] = safe_format('ram_free', 'GB')
+            metrics['disk_percent'] = safe_format('disk_percent', '%')
+            metrics['disk_used'] = safe_format('disk_used', 'GB')
+            metrics['disk_total'] = safe_format('disk_total', 'GB')
+            metrics['disk_free'] = safe_format('disk_free', 'GB')
+            metrics['swap_percent'] = safe_format('swap_percent', '%')
+            metrics['swap_usado'] = safe_format('swap_usado', 'GB')
+            metrics['swap_total'] = safe_format('swap_total', 'GB')
+            metrics['red_bytes_sent'] = safe_format('red_bytes_sent', 'MB', is_bytes=True)
+            metrics['red_bytes_recv'] = safe_format('red_bytes_recv', 'MB', is_bytes=True)
+            metrics['cpu_temp_celsius'] = safe_format('cpu_temp_celsius', '°C')
+            metrics['battery_percent'] = safe_format('battery_percent', '%')
+            metrics['cpu_power_package'] = safe_format('cpu_power_package', 'W')
+            metrics['cpu_power_cores'] = safe_format('cpu_power_cores', 'W')
+            metrics['cpu_clocks'] = safe_format('cpu_clocks', 'MHz')
+
             return metrics
         except sqlite3.Error as e:
             return {'error': f"Error al leer de la base de datos: {e}"}
